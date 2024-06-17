@@ -126,7 +126,7 @@ def QAM16(data, p):
 
     for i in range(lim1):
         part = data[4*i:4*i+4]
-        dec_val = np.dot(part, m)
+        dec_val = int(np.dot(part, m))
         sym[i] = mapping[dec_val]
 
     # Apply power scaling factor
@@ -586,40 +586,134 @@ def ssfm_chromatic_kerr(signal, span_lengths, gamma, alpha_db, beta2, dt, B, NF_
     return x_pol, y_pol
 
 
-def DBP1(signal, span_lengths, gamma, alpha_db, beta2, dt, B, NF_db, h, f0):
-    alpha = np.log(10) / 10 * alpha_db * 1e-3
-    gain_db = alpha_db * span_lengths
-    gains = 10 ** (gain_db / 10)
+def ssfm1(signal, l_span, gamma, alpha_db, beta2, dt, TAU, THETA, PHI, B, NF_db, h, f0, N_s, t):
+    # Calculate the fiber loss coefficient based on the attenuation in dB/km
+    alpha = (np.log(10)/10)*(10**(-3))*(alpha_db)
 
-    x, y = signal
-    num_samples = len(x)
-    omega = 2 * np.pi / (num_samples * dt) * fftshift(np.arange(-num_samples / 2, num_samples / 2))
-    step_size = 1e3
+    # Calculate the total gain per span based on fiber loss and span length
+    G_db = alpha_db*(l_span)
+    # Compute the gain coefficient for each fiber span
+    g = 10**(G_db/10)
+    nf = 10**(NF_db/10)
+    var = (g[0]*g[1]-1)*h*f0*(nf)*B
+    
+    # Separate the X and Y polarizations of the input signal
+    signal_recx, signal_recy = signal[0], signal[1]
+    l_s = int(len(signal_recx))
+    # Compute the angular frequency vector
+    w = 2*np.pi/(l_s*dt) * np.fft.fftshift(np.arange(-l_s/2, l_s/2))
+    step_s = 1e3  # Conversion factor for meters
 
-    attenuation = np.exp((-alpha / 2) * step_size)
-    num_spans = len(span_lengths) // 2
+    # Compute the exponential attenuation factor over one step
+    att = np.exp((-alpha/2)*step_s)
 
-    for j in range(num_spans - 1, -1, -1):
-        dispersion_correction = np.exp(-(1j / 2) * -beta2[j] * (omega ** 2) * step_size)
+    # Determine the number of spans (each span includes both SMF and DCF)
+    n_span = int(len(l_span)/2)
 
-        x /= np.sqrt(gains[j])
-        y /= np.sqrt(gains[j])
+    for j in range(n_span):
+        # Dispersion compensation for the first and second fiber in the span
+        dis1 = np.exp(-(1j/2)*beta2[2*j]*(w**2)*step_s)
+        dis2 = np.exp(-(1j/2)*beta2[2*j+1]*(w**2)*step_s)
 
-        for _ in range(span_lengths[j]):
-            fx = fft(x / attenuation)
-            fy = fft(y / attenuation)
+        # Iterate over the SMF sections
+        for _ in range(l_span[j*2]):
+            # Fourier transform of the signals
+            signal_recfx = np.fft.fft(signal_recx)
+            signal_recfy = np.fft.fft(signal_recy)
 
-            fx *= dispersion_correction
-            fy *= dispersion_correction
+            # Apply dispersion compensation
+            signal_recfx = signal_recfx * dis1
+            signal_recfy = signal_recfy * dis1
 
-            x = ifft(fx)
-            y = ifft(fy)
+            # Inverse Fourier transform to return to time domain
+            signal_recx = np.fft.ifft(signal_recfx) * att[2*j]
+            signal_recy = np.fft.ifft(signal_recfy) * att[2*j]
 
-            nonlinear_phase_shift = -8 / 9 * gamma[j] * (np.abs(x)**2 + np.abs(y)**2) * step_size
-            x *= np.exp(1j * nonlinear_phase_shift)
-            y *= np.exp(1j * nonlinear_phase_shift)
+            # Apply nonlinear phase shift
+            signal_recx = signal_recx * np.exp(1j * 8/9 * gamma[2*j] * (abs(signal_recx)**2 + abs(signal_recy)**2) * step_s)
+            signal_recy = signal_recy * np.exp(1j * 8/9 * gamma[2*j] * (abs(signal_recy)**2 + abs(signal_recx)**2) * step_s)
 
-    return x, y
+        # Gain compensation after SMF section
+        signal_recx = np.sqrt(g[2*j]) * signal_recx
+        signal_recy = np.sqrt(g[2*j]) * signal_recy
+
+        # Iterate over the DCF sections
+        for _ in range(l_span[j*2+1]):
+            signal_recfx = np.fft.fft(signal_recx)
+            signal_recfy = np.fft.fft(signal_recy)
+
+            signal_recfx = signal_recfx * dis2
+            signal_recfy = signal_recfy * dis2
+
+            signal_recx = np.fft.ifft(signal_recfx) * att[2*j+1]
+            signal_recy = np.fft.ifft(signal_recfy) * att[2*j+1]
+
+        # Add noise introduced by amplification
+        noise_x = np.sqrt(var/2) * (np.random.randn(l_s) + 1j * np.random.randn(l_s))
+        noise_y = np.sqrt(var/2) * (np.random.randn(l_s) + 1j * np.random.randn(l_s))
+        signal_recx = np.sqrt(g[2*j+1]) * signal_recx + noise_x
+        signal_recy = np.sqrt(g[2*j+1]) * signal_recy + noise_y
+
+    return signal_recx, signal_recy
+
+
+def DBP1(signal, l_span, gamma, alpha_db, beta2, dt, TAU, THETA, PHI, B, NF_db, h, f0, N_s, t):
+    # Calculate fiber loss coefficient
+    alpha = (np.log(10)/10)*(10**(-3))*(alpha_db)
+    # Calculate total fiber gain based on span lengths and loss
+    G_db = alpha_db * (l_span)
+    g = 10**(G_db/10)  # Gain per span
+
+    # Separate the X and Y polarizations of the signal
+    signal_recx, signal_recy = signal[0], signal[1]
+    l_s = int(len(signal_recx))  # Signal length
+    w = 2*np.pi/(l_s*dt) * np.fft.fftshift(np.arange(-l_s/2, l_s/2))  # Frequency vector
+    step_s = 1e3  # Step size for the integration (in meters)
+
+    # Attenuation factor due to loss
+    att = np.exp((-alpha/2)*step_s)
+
+    # Number of spans (half because each full span includes an SMF and a DCF section)
+    n_span = int(len(l_span)/2)
+    
+    # Loop through spans in reverse order for backpropagation
+    for j in range(n_span-1, -1, -1):
+        # Calculate dispersion operators for both fiber types
+        dis1 = np.exp(-(1j/2)*-beta2[2*j]*(w**2)*step_s)
+        dis2 = np.exp(-(1j/2)*-beta2[2*j+1]*(w**2)*step_s)
+
+        # Compensate for gain and apply dispersion compensation for DCF
+        signal_recx = signal_recx/np.sqrt(g[2*j+1])
+        signal_recy = signal_recy/np.sqrt(g[2*j+1])
+        for _ in range(l_span[j*2+1]):
+            signal_recfx = np.fft.fft(signal_recx/att[2*j+1])
+            signal_recfy = np.fft.fft(signal_recy/att[2*j+1])
+
+            signal_recfx = signal_recfx*dis2
+            signal_recfy = signal_recfy*dis2
+
+            signal_recx = np.fft.ifft(signal_recfx)
+            signal_recy = np.fft.ifft(signal_recfy)
+
+        # Compensate for gain and apply dispersion compensation for SMF
+        signal_recx = signal_recx/np.sqrt(g[2*j])
+        signal_recy = signal_recy/np.sqrt(g[2*j])
+        for _ in range(l_span[j*2]):
+            # Apply nonlinear phase shift
+            signal_recx = signal_recx * np.exp(1j*-8/9*gamma[2*j]*(abs(signal_recx)**2 + abs(signal_recy)**2)*step_s)
+            signal_recy = signal_recy * np.exp(1j*-8/9*gamma[2*j]*(abs(signal_recy)**2 + abs(signal_recx)**2)*step_s)
+
+            signal_recfx = np.fft.fft(signal_recx/att[2*j])
+            signal_recfy = np.fft.fft(signal_recy/att[2*j])
+
+            signal_recfx = signal_recfx*dis1
+            signal_recfy = signal_recfy*dis1
+
+            signal_recx = np.fft.ifft(signal_recfx)
+            signal_recy = np.fft.ifft(signal_recfy)
+
+    return signal_recx, signal_recy
+
 
 def DBP_nonsymm(signal, span_lengths, gamma, alpha_db, beta2, dt, TAU, THETA, PHI, B, NF_db, h, f0, N_s, t):
     """
