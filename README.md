@@ -1,6 +1,6 @@
 ## Optical Fiber Simulations for my PhD Research
 
-This repository contains Python code developed for my PhD research on optical fiber communications. The code simulates optical signal transmission through single-mode fibers using dual-polarization modulated lasers.
+This repository contains Python code developed for my research on optical fiber communications. The code simulates optical signal transmission through single-mode fibers using dual-polarization modulated lasers.
 
 ---
 Here are descriptions of the files for your GitHub repository:
